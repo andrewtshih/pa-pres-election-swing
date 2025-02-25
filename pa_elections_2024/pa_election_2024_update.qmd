@@ -1,0 +1,287 @@
+---
+title: "Infographic Project Draft"
+author: 
+- "Andrew Shih"
+- "Style Guide: tidyverse"
+date: 2024-02-23
+format:
+  pdf:
+    colorlinks: true
+---
+
+```{r}
+library(dplyr)
+library(stringr)
+library(tidyr)
+pa_election_df <- read.csv("../datasets/countypres_2000-2020.csv") |>
+  filter(state == "PENNSYLVANIA") |>
+  filter(party == "DEMOCRAT" | party == "REPUBLICAN") |>
+  group_by(year, state, county_name, office, candidate, party) |>
+  summarize(
+    new_candidatevotes = sum(candidatevotes),
+    new_totalvotes = sum(totalvotes)
+  ) |>
+  select(
+    year,
+    state,
+    county_name,
+    party,
+    new_candidatevotes,
+    new_totalvotes
+  ) # |>
+  # mutate(percentage_of_vote = new_candidatevotes * 100 / new_totalvotes) |>
+  # arrange(state, county_name, party, year) |>
+  # group_by(state, county_name, party) |>
+  # mutate(previous_percentage = lag(percentage_of_vote)) |>
+  # mutate(swing = percentage_of_vote - previous_percentage)
+
+pa_election_2024_df <- read.csv("../datasets/2024_US_County_Level_Presidential_Results.csv") |>
+  filter(state_name == "Pennsylvania") |>
+  mutate(county_name = toupper(str_replace(county_name, " County", ""))) |>
+  pivot_longer(cols=c(votes_gop, votes_dem)) |>
+  rename(new_totalvotes = total_votes,
+         new_candidatevotes = value,
+         party = name, 
+         state = state_name) |>
+  mutate(state = toupper(state)) |>
+  mutate(party = ifelse(party == "votes_gop", "REPUBLICAN", "DEMOCRAT")) |>
+  mutate(year = 2024) |>
+  select(-c(county_fips, diff, per_gop, per_dem, per_point_diff))
+
+combined_w_2024_df <- bind_rows(pa_election_df, pa_election_2024_df) |>
+  arrange(county_name, party, year) |>
+  mutate(percentage_of_vote = new_candidatevotes * 100 / new_totalvotes) |>
+  group_by(state, county_name, party) |>
+  mutate(previous_percentage = lag(percentage_of_vote)) |>
+  mutate(swing = percentage_of_vote - previous_percentage)
+
+pa_election_df_swing <- combined_w_2024_df |>
+  select(
+    year, state, county_name, party,
+    percentage_of_vote, previous_percentage, swing
+  ) |>
+  group_by(county_name, year) |>
+  summarize(two_party_swing = (sum(swing[party == "REPUBLICAN"], na.rm = TRUE) +
+    sum(swing[party == "DEMOCRAT"], na.rm = TRUE)) / 2)
+```
+
+```{r}
+pa_election_df_swing_avg <- pa_election_df_swing |>
+  filter(year != 2000) |>
+  group_by(county_name) |>
+  summarize(avg = mean(abs(two_party_swing)))
+```
+
+```{r}
+library(gghighlight)
+library(ggrepel)
+
+county_list <- c(
+  "SULLIVAN",
+  "WARREN",
+  "GREENE",
+  "BRADFORD",
+  "COLUMBIA"
+)
+
+plot_1 <- pa_election_df_swing |>
+  filter(!year %in% c(2000)) |>
+  filter(county_name != "CAMERON") |>
+  ggplot() +
+  geom_line(aes(x = year, y = abs(two_party_swing), color = county_name),
+    size = 0.75, alpha = 1
+  ) +
+  gghighlight(
+    county_name %in% county_list,
+    label_params = list(size = 2),
+    unhighlighted_params = list(size = 0.5, alpha = 0.3)
+  ) +
+  labs(
+    title = "Two-Party Voting Shifts in Pennsylvania Counties (2004-2024)",
+    subtitle = "Major decreases in the magnitude of shift across all counties suggest 
+    that the overall election result in Pennsylvania were due to small, but decisive, 
+    changes. The highlighted counties had shifts with magnitude above 0.4.",
+    x = "Election Year",
+    y = "Magnitude of Shift b/w the
+    Major Parties (%)",
+    caption = "Data source: Harvard Dataverse, Tom McGovern (GitHub; scraped from Fox News)"
+  ) +
+  scale_x_continuous(
+    breaks = seq(2004, 2024, by = 4),
+    labels = c(
+      "2004\n(Bush)", "2008\n(Obama)",
+      "2012\n(Obama)", "2016\n(Trump)",
+      "2020\n(Biden)", "2024\n(Trump)"
+    ),
+    limits = c(2004, 2024),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  theme_classic() +
+  theme(
+    plot.title = element_text(
+      margin = margin(b = 5),
+      hjust = 0.5,
+      face = "bold",
+      size = 11.5
+    ),
+    plot.subtitle = element_text(hjust = 0.5, size = 9.5),
+    plot.caption = element_text(size = 6),
+    plot.margin = margin(l = 120),
+    legend.position = "none",
+    panel.grid.major.y = element_line(color = "gray", size = 0.15),
+    panel.grid.minor.y = element_blank(),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    axis.text.x = element_text(color = c("red", "blue", 
+                                         "blue", "red",
+                                         "blue", "red")),
+    axis.title = element_text(size = 7.5)
+  )
+
+plot_1
+```
+```{r}
+library(maps)
+
+pa_election_df_rep <- combined_w_2024_df |>
+  filter(year %in% c(2020, 2024)) |>
+  filter(party == "REPUBLICAN") |>
+  select(-one_of(c("previous_percentage", "swing"))) |>
+  group_by(county_name) |>
+  summarize(inc_rep_vote_share = (sum(percentage_of_vote[year == 2024]) -
+    sum(percentage_of_vote[year == 2020])))
+```
+
+```{r}
+avg_coords <-
+  map_data("county") |>
+  filter(region == "pennsylvania") |>
+  mutate(subregion = toupper(subregion)) |>
+  group_by(subregion) |>
+  summarize(
+    avg_long = mean(long),
+    avg_lat = mean(lat)
+  )
+
+pa_election_df_rep_rank <- pa_election_df_rep |>
+  mutate(rank = rank(-inc_rep_vote_share))
+
+joined <- avg_coords |>
+  left_join(pa_election_df_rep_rank, by = c("subregion" = "county_name"))
+```
+
+```{r}
+library(ggplot2)
+
+pa_county_borders <- map_data("county") |>
+  mutate(subregion = toupper(subregion)) |>
+  filter(region == "pennsylvania") |>
+  left_join(pa_election_df_rep_rank, by = c("subregion" = "county_name")) |>
+  left_join(avg_coords, by = c("subregion" = "subregion"))
+
+pa_cities <- data.frame(
+  city = c("Philadelphia", "Pittsburgh", "Harrisburg", "State College"),
+  lat = c(39.9526, 40.4406, 40.2732, 40.7934),
+  long = c(-75.1652, -79.9959, -76.8841, -77.8612),
+  nudge_x = c(0.2, 0, 0.475, -0.1),
+  nudge_y = c(0.1, 0.1, 0, 0.1)
+)
+
+plot_3 <- pa_county_borders |>
+  ggplot() +
+  geom_polygon(aes(x = long, y = lat, group = group, fill = inc_rep_vote_share), 
+                   size = ifelse(pa_county_borders$subregion %in% 
+                                   c("CUMBERLAND", "UNION", 
+                                      "PERRY", "ADAMS"), 0.75, 0.25),
+                    color = ifelse(pa_county_borders$subregion %in% 
+                                   c("CUMBERLAND", "UNION", 
+                                      "PERRY", "ADAMS"), "black", "gray45")
+  ) +
+  geom_point(
+    data = pa_cities,
+    aes(x = long, y = lat),
+    color = "black",
+    size = 0.25
+  ) +
+  geom_text(
+    data = pa_cities, aes(
+      x = long,
+      y = lat,
+      label = city,
+    ), size = 2,
+    nudge_x = pa_cities$nudge_x,
+    nudge_y = pa_cities$nudge_y,
+    fontface = "bold", 
+    color = "black"
+  ) +
+  scale_fill_gradient2(
+    low = "blue", mid = "white", high = "red", midpoint = 0,
+    limits = c(-4, 4)
+  ) +
+  theme_void() +
+  coord_map("polyconic") +
+  labs(
+    fill = "Increase in Republican Vote Share\nfrom 2020 to 2024 (%)",
+    title = "Mapping Republican Vote Share Increase from 2020 to 2024",
+    subtitle = "Republican vote share increased in almost every Pennsylvania 
+    county. Interestingly, The 4 counties that experienced a decrease in 
+    Republican vote share (outlined in bold) are located in the Susquehanna 
+    Valley or in the Lower Susquehanna Subbasin.",
+    caption = "Data source: Harvard Dataverse,
+    Tom McGovern (GitHub; scraped from Fox News)"
+  ) +
+  theme_void() + 
+  theme(
+    axis.ticks = element_blank(),
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    plot.title = element_text(
+      margin = margin(b = 8, r = 100, l = 100),
+      hjust = 0.5, face = "bold", size = 11.5
+    ),
+    plot.subtitle = element_text(
+      margin = margin(r = 90, l = 100),
+      hjust = 0.5, size = 9.5
+    ),
+    plot.caption = element_text(
+      margin = margin(r = 125, l = 500),
+      hjust = 0.5, size = 6
+    ),
+    plot.margin = margin(r = 175, l = 125),
+    legend.position = "bottom",
+    legend.justification = "center",
+    legend.title = element_text(size = 8),
+    legend.text = element_text(size = 7),
+    legend.key.size = unit(0.5, "cm")
+  )
+
+plot_3
+```
+
+```{r}
+library(patchwork)
+
+combined_plot <- (plot_1 / plot_spacer() / plot_3) +
+  plot_annotation(
+    title = "How the Pennsylvania Electorate
+Changed in the 2024 Election",
+    # subtitle = paste(
+    #   ""
+    # ),
+    theme = theme(
+      plot.title = element_text(margin = margin(t = 20, l = 55, b = 20), hjust = 0.5, face = "bold", size = 20),
+      # plot.subtitle = element_text(
+      #   margin = margin(l = 140, b = 10),
+      #   hjust = 0.65, size = 14
+      # )
+    )
+  ) +
+  plot_layout(heights = c(1, 0.1, 1))
+
+ggsave("2024_pa_election_infographic.pdf",
+  plot = combined_plot, device = pdf(),
+  width = 8, height = 7, units = "in"
+)
+```
